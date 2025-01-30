@@ -1,2 +1,2 @@
-# EDDPO
-DDPO algorithm 
+# EDPO code
+EDPO algorithm 
