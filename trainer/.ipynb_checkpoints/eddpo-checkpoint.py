@@ -1,7 +1,7 @@
 import os
 os.environ["OMP_NUM_THREADS"] = "18"
 from collections import defaultdict
-from trainer.edpo_config import EDPOConfig
+from trainer.eddpo_config import EDDPOConfig
 from configs.datasets_config import get_dataset_info
 from qm9 import dataset
 from qm9.models import get_model
@@ -18,7 +18,6 @@ from qm9.analyze import check_stability
 import torch.nn as nn
 import torch.nn.init as init
 from trainer.reward import qm_reward_model
-from qm9.utils import compute_mean_mad
 
 torch.manual_seed(42)
 if torch.cuda.is_available():
@@ -48,59 +47,53 @@ def kl_divergence_normal(mu_P, sigma_P, mu_Q):
     kl_div = term2 + term3
     return kl_div
 
-import numpy as np
-
 def rmsd(A, B=None):
     """
-    Calculate the RMSD (Root Mean Square Deviation) between two 2D matrices A and B.
-    If B is not provided, it defaults to a zero matrix.
+    计算两个二维矩阵 A 和 B 之间的 RMSD (Root Mean Square Deviation)。
+    如果未提供 B，则默认将 B 设为全零矩阵。
 
-    Parameters:
-    A: numpy.ndarray, shape (m, n)
-    B: numpy.ndarray, shape (m, n), default is None. If None, B will be set to a zero matrix.
+    参数:
+    A: numpy.ndarray, 形状为 (m, n)
+    B: numpy.ndarray, 形状为 (m, n)，默认为 None，若为 None，B 将被设置为全零矩阵
     
-    Returns:
-    float: RMSD value
+    返回:
+    float: RMSD 值
     """
-    # If B is None, set B to a zero matrix with the same shape as A
+    # 如果 B 为 None，则将 B 设为与 A 相同形状的全零矩阵
     if B is None:
         B = np.zeros_like(A)
 
-    # Ensure matrices A and B have the same shape
+    # 确保输入矩阵 A 和 B 具有相同的形状
     if A.shape != B.shape:
-        raise ValueError("The input matrices A and B must have the same shape")
+        raise ValueError("输入的矩阵 A 和 B 必须具有相同的形状")
     
-    # Calculate the squared differences between matrices A and B
+    # 计算矩阵 A 和 B 之间的差异的平方
     diff = A - B
     squared_diff = np.square(diff)
     
-    # Compute the root mean square deviation (RMSD)
+    # 计算均方根偏差 (RMSD)
     rmsd_value = np.sqrt(np.mean(squared_diff))
     
     return rmsd_value
-
-class EDPOTrainer(BaseTrainer):
+class EDDPOTrainer(BaseTrainer):
     """
-    The EDPOTrainer uses e3nn diffusion policy optimization to optimise diffusion models.
+    The EDDPOTrainer uses e3nn diffusion policy optimization to optimise diffusion models.
     Attributes:
-        **config_path**
+        **config**
         **reward_fuction**
-        **resume**
+        **sd_pipline**
     """
     def __init__(
         self,
         config_path,
-        reward,
-        resume = False
     ):
         self.config_path = config_path
-        self.config = EDPOConfig(config_path)
+        self.config = EDDPOConfig(config_path)
         self.generate_model = self._create_edm_pipline()
         self.optimizer = self._setup_optimizer(self.generate_model.parameters())
-        self.config["reward"] = reward
-        if resume:
-            self.optimizer.load_state_dict(torch.load(self.config.check_point_optimizer_path,
-                                        map_location=self.config.edm_config.device ))
+        # if self.config.resume:
+        #     self.optimizer.load_state_dict(torch.load(self.config.check_point_optimizer_path,
+        #                                 map_location=self.config.edm_config.device ))
         
     def save_model(self,path,name):
         torch.save(self.generate_model.state_dict(), join(path,f"{name}_generative_model.npy"))
@@ -117,8 +110,7 @@ class EDPOTrainer(BaseTrainer):
         dataset_info = get_dataset_info(edm_config.dataset, edm_config.remove_h)
 
         dataloaders, charge_scale = dataset.retrieve_dataloaders(edm_config)
-        if self.config.condition:
-            property_norms = compute_mean_mad(dataloaders, self.config.edm_config.conditioning, self.config.edm_config.dataset)
+
         flow, nodes_dist, prop_dist = get_model(edm_config, edm_config.device, dataset_info, dataloaders['train'])
         flow.to(edm_config.device)
         if self.config.resume :
@@ -129,11 +121,9 @@ class EDPOTrainer(BaseTrainer):
             flow_state_dict = torch.load(join(model_path, fn),
                                         map_location=edm_config.device )
         flow.load_state_dict(flow_state_dict)
-        if prop_dist is not None:
-            prop_dist.set_normalizer(property_norms)
+        
         self.nodes_dist = nodes_dist
         self.dataset_info = dataset_info
-        self.prop_dist = prop_dist
         ## qm9 node distribution ⬆
         
         return flow
@@ -155,19 +145,20 @@ class EDPOTrainer(BaseTrainer):
         """
         
         # 1. generate samples
-        
         samples = self._generate_samples(
             iterations=self.config.sample_num_batches_per_epoch,
             batch_size=self.config.sample_batch_size,
-            ref= False,
-            condition = self.config.condition
+            ref= False
         )
         
         # 2. compute rewards
         rewards, stables = self.compute_rewards(samples)
         rewards = torch.tensor(rewards,dtype=float).to(samples['x'].device)
         stables = torch.tensor(stables,dtype=float).to(samples['x'].device)
+        # print(rewards.mean().item(),rewards.std().item())
         advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        # advantages = (rewards - 0.6504) / (0.7600 + 1e-8)
+        # advantages = rewards
         total_batch_size, num_timesteps, max_atoms_num, _ = samples["latents"].shape
         num_timesteps -= 2
         
@@ -179,16 +170,11 @@ class EDPOTrainer(BaseTrainer):
         results = []
         del samples["x"]
         del samples["h"]
-        
         for inner_epoch in range(self.config.train_num_inner_epochs):
             # shuffle batch
             perm = torch.randperm(total_batch_size, device=self.config.device)
-            if self.config.condition:
-                for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma','context']:
-                    samples[key] = samples[key][perm]
-            else:
-                for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma']:
-                    samples[key] = samples[key][perm]
+            for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma']:
+                samples[key] = samples[key][perm]
             # shuffle timesteps
             perms = torch.stack(
                 [torch.randperm(num_timesteps+1, device=self.config.device) for _ in range(total_batch_size)]
@@ -206,9 +192,8 @@ class EDPOTrainer(BaseTrainer):
             transposed_values = zip(*reshaped_values)
             # Create new dictionaries for each row of transposed values
             samples_batched = [dict(zip(original_keys, row_values)) for row_values in transposed_values]
-            # Train each batch
+            # training~
             result = self._train_batched_samples(inner_epoch, epoch, global_step, samples_batched)
-            
             result["Stable"] = stables.mean().item()
             result["Reward"] = rewards.mean().item()
             results.append(result)
@@ -229,7 +214,7 @@ class EDPOTrainer(BaseTrainer):
         node_mask = node_mask.unsqueeze(2).to(device)
         
         return node_mask, edge_mask
-    def _batch_samples(self, batch_size, timestep=1000, condition=None, fix_noise=False, ref= False):
+    def _batch_samples(self, batch_size, timestep=1000, context=None, fix_noise=False, ref= False):
         """
         Generate a batch of samples from the model's input distribution and process the resulting data.
 
@@ -256,20 +241,17 @@ class EDPOTrainer(BaseTrainer):
         Raises:
             AssertionError: If the maximum number of nodes sampled exceeds the dataset's maximum node limit.
         """
+
         device = self.config.edm_config.device
         # 1. prepare edm input 
         nodesxsample = self.nodes_dist.sample(batch_size)
         max_n_nodes = self.dataset_info['max_n_nodes']  # <- this is the maximum node_size in QM9
         node_mask,edge_mask = self.get_mask(nodesxsample,batch_size,device,max_n_nodes)
-        
-        if condition:
-            context = self.prop_dist.sample_batch(nodesxsample).to(device)
-            context = context.unsqueeze(1).repeat(1, max_n_nodes, 1).to(device) * node_mask
-            context = context.squeeze(-1)
-        else:
-            context = None
+
         # 2. generate sample from edm
-        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_edpo(batch_size, max_n_nodes, node_mask, edge_mask, context = context, fix_noise=fix_noise, timestep=timestep)
+        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_eddpo(
+            batch_size, max_n_nodes, node_mask, edge_mask, context, fix_noise=fix_noise, timestep=timestep
+        )
        
         # 3. warp result
         res = {
@@ -280,13 +262,11 @@ class EDPOTrainer(BaseTrainer):
             "nodesxsample": nodesxsample.to(self.config.device),
             "timesteps":torch.tensor(timestep).to(self.config.device),
             "mu": torch.stack(mu, dim=1),
-            "sigma": torch.stack(sigma, dim=1),
+            "sigma": torch.stack(sigma, dim=1)
         }
-        if self.config.condition:
-            res["context"] = context
         
         return res
-    def _generate_samples(self, iterations, batch_size, ref = False, condition = None):
+    def _generate_samples(self, iterations, batch_size, ref = False):
         """
         Generate samples from the model
 
@@ -300,7 +280,7 @@ class EDPOTrainer(BaseTrainer):
         
         samples = []
         for _ in tq(range(iterations),desc = "Generate samples", unit = "sample",leave=False):
-            sample = self._batch_samples(batch_size, timestep=self.config.num_train_timesteps,ref=ref,condition = condition)
+            sample = self._batch_samples(batch_size, timestep=self.config.num_train_timesteps,ref=ref)
             samples.append(sample)
             
         ## concat samples
@@ -313,56 +293,6 @@ class EDPOTrainer(BaseTrainer):
                 for k in samples[0][key].keys():
                     samples_warped[key][k]  = torch.cat([s[key][k] for s in samples])
         return samples_warped 
-    
-    def compute_rewards(self,samples):
-        '''
-        use stable as reward fuction
-        '''
-        ## encoder ['H','C','O','N','F']
-        atom_encoder = self.dataset_info['atom_decoder']
-        one_hot = samples["h"]["categorical"]
-        x = samples['x']
-        nodesxsample = samples["nodesxsample"]
-        node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
-        for i in range(x.shape[0]):
-            node_mask[i, 0:nodesxsample[i]] = 1
-        force = []
-        mini_batch_size = self.config.mini_batch
-        for i in tq(range(0,nodesxsample.shape[0]//mini_batch_size + 1),desc="Calculate QM Forces",leave=False):
-            ptr = i*mini_batch_size 
-            if i != nodesxsample.shape[0]//mini_batch_size:
-               force_batch = qm_reward_model(one_hot[ptr:ptr+mini_batch_size],x[ptr:ptr+mini_batch_size],atom_encoder,node_mask[ptr:ptr+mini_batch_size],"10.245.158.28",x[ptr:ptr+128].shape[0])
-            else:
-               force_batch = qm_reward_model(one_hot[ptr:],x[ptr:],atom_encoder,node_mask[ptr:],"10.245.158.28",x[ptr:].shape[0])
-            force += force_batch
-            
-        n_samples = len(x)
-        processed_list = []
-        rewards = []
-        real_force = []
-        molecule_stable = []
-        for i in range(n_samples):
-            atom_type = one_hot[i].argmax(1).cpu().detach()
-            pos = x[i].cpu().detach()
-            atom_type = atom_type[0:int(nodesxsample[i])]
-            pos = pos[0:int(nodesxsample[i])]
-            processed_list.append((pos, atom_type))
-        calc = XTB(method="GFN2-xTB")
-        for mol in tq(processed_list, desc="Calculate Forces",leave=False):
-            pos = mol[0].tolist()
-            atom_type = mol[1].tolist()
-            validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
-            atom_type = [atom_encoder[atom] for atom in atom_type]
-            molecule_stable.append(int(validity_results[0]))
-            atoms = Atoms(symbols=atom_type, positions=pos)
-            atoms.calc = calc
-            forces = atoms.get_forces()
-            mean_abs_forces = rmsd(forces)
-            real_force.append(mean_abs_forces)
-            rewards.append(-1 * mean_abs_forces)
-        
-        print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable),"QM_force:",np.mean(force))
-        return force, molecule_stable
     
     # def compute_rewards(self,samples):
     #     '''
@@ -377,7 +307,7 @@ class EDPOTrainer(BaseTrainer):
     #     node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
     #     for i in range(x.shape[0]):
     #         node_mask[i, 0:nodesxsample[i]] = 1
-        
+    #     force = qm_reward_model(one_hot,x,atom_encoder,node_mask,"10.245.164.153",x.shape[0])
     #     n_samples = len(x)
     #     processed_list = []
     #     rewards = []
@@ -395,7 +325,7 @@ class EDPOTrainer(BaseTrainer):
     #         atom_type = mol[1].tolist()
     #         validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
     #         atom_type = [atom_encoder[atom] for atom in atom_type]
-    #         molecule_stable.append(validity_results[1]/validity_results[2])
+    #         molecule_stable.append(int(validity_results[0]))
     #         # if validity_results[0]:
     #         #     rewards.append(1.0)
     #         # else:
@@ -403,11 +333,8 @@ class EDPOTrainer(BaseTrainer):
     #         # # rewards.append(int(validity_results[0]))
     #         atoms = Atoms(symbols=atom_type, positions=pos)
     #         atoms.calc = calc
-    #         try:
-    #             forces = atoms.get_forces()
-    #             mean_abs_forces = rmsd(forces)
-    #         except:
-    #             mean_abs_forces = 5.0
+    #         forces = atoms.get_forces()
+    #         mean_abs_forces = rmsd(forces)
     #         # opt1 = BFGS(atoms,
     #         #             trajectory=f'mode_pre_opt.traj',
     #         #             logfile=f"mode_pre_opt.log")
@@ -419,8 +346,67 @@ class EDPOTrainer(BaseTrainer):
     #         # else:
     #         #     rewards.append(-1.0)
     #     # print("\n","Rewards:",np.mean(rewards),"Force:",np.mean(real_force),"Stable:", np.mean(molecule_stable))
-    #     print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable))
-    #     return rewards, molecule_stable
+        
+    #     print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable),"QM_force:",np.mean(force))
+    #     return force, molecule_stable
+    
+    def compute_rewards(self,samples):
+        '''
+        use stable as reward fuction
+        '''
+        ## encoder ['H','C','O','N','F']
+        atom_encoder = self.dataset_info['atom_decoder']
+        one_hot = samples["h"]["categorical"]
+        x = samples['x']
+        nodesxsample = samples["nodesxsample"]
+        
+        node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
+        for i in range(x.shape[0]):
+            node_mask[i, 0:nodesxsample[i]] = 1
+        
+        n_samples = len(x)
+        processed_list = []
+        rewards = []
+        real_force = []
+        molecule_stable = []
+        for i in range(n_samples):
+            atom_type = one_hot[i].argmax(1).cpu().detach()
+            pos = x[i].cpu().detach()
+            atom_type = atom_type[0:int(nodesxsample[i])]
+            pos = pos[0:int(nodesxsample[i])]
+            processed_list.append((pos, atom_type))
+        calc = XTB(method="GFN2-xTB")
+        for mol in tq(processed_list, desc="Calculate Forces",leave=False):
+            pos = mol[0].tolist()
+            atom_type = mol[1].tolist()
+            validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
+            atom_type = [atom_encoder[atom] for atom in atom_type]
+            molecule_stable.append(validity_results[1]/validity_results[2])
+            # if validity_results[0]:
+            #     rewards.append(1.0)
+            # else:
+            #     rewards.append(-1.0)
+            # # rewards.append(int(validity_results[0]))
+            atoms = Atoms(symbols=atom_type, positions=pos)
+            atoms.calc = calc
+            try:
+                forces = atoms.get_forces()
+                mean_abs_forces = rmsd(forces)
+            except:
+                mean_abs_forces = 5.0
+            # opt1 = BFGS(atoms,
+            #             trajectory=f'mode_pre_opt.traj',
+            #             logfile=f"mode_pre_opt.log")
+            # opt1.run(fmax=0.01)
+            real_force.append(mean_abs_forces)
+            rewards.append(-1 * mean_abs_forces)
+            # if mean_abs_forces < 0.30 and validity_results[0]:
+            #     rewards.append(1.0)
+            # else:
+            #     rewards.append(-1.0)
+        # print("\n","Rewards:",np.mean(rewards),"Force:",np.mean(real_force),"Stable:", np.mean(molecule_stable))
+        print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable))
+        return rewards, molecule_stable
         
 
     def _train_batched_samples(self, inner_epoch, epoch, global_step, batched_samples):
@@ -469,7 +455,16 @@ class EDPOTrainer(BaseTrainer):
         result["ClipFrac"] = np.mean(np.array(info["clipfrac"]))
         result["Loss"] = np.mean(np.array(info["loss"]))
         result["GlobalStep"] = global_step + 1
-
+        # print("\n","Kl:",np.mean(np.array(info["approx_kl"])),"ClipFrac:",np.mean(np.array(info["clipfrac"])),"lamda:",np.mean(np.array(info["lamda"])),np.std(np.array(info["lamda"])))
+            # # Checks if the accelerator has performed an optimization step behind the scenes
+            # if self.accelerator.sync_gradients:
+            #     # log training-related stuff
+            #     info = {k: torch.mean(torch.stack(v)) for k, v in info.items()}
+            #     info = self.accelerator.reduce(info, reduction="mean")
+            #     info.update({"epoch": epoch, "inner_epoch": inner_epoch})
+            #     self.accelerator.log(info, step=global_step)
+            #     global_step += 1
+            #     info = defaultdict(list)
         return result
     
     def _setup_optimizer(self, trainable_layers_parameters):
@@ -509,8 +504,9 @@ class EDPOTrainer(BaseTrainer):
         t_array = t_array / self.config.num_train_timesteps
         node_mask, edge_mask = self.get_mask(nodesxsample,self.config.train_batch_size,self.config.device,self.dataset_info['max_n_nodes'])
         ## need credit
-        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_edpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents,context=context)
+        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_eddpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents)
         
+
         ## log_prob is old latents in new policy
         # compute the log prob of next_latents given latents under the current model
 
@@ -519,9 +515,22 @@ class EDPOTrainer(BaseTrainer):
             -self.config.train_adv_clip_max,
             self.config.train_adv_clip_max,
         )
+        # import pdb;pdb.set_trace()
         dif_logp = (log_prob_current - log_prob_old)
+        
         ratio = torch.exp(dif_logp)
+        
+        # import pdb;pdb.set_trace()
+
         kl = torch.mean(kl_divergence_normal(mu_current*node_mask,sigma_current,mu_old*node_mask))
+        # approx_kl = 0.5 * torch.mean((log_prob_current - log_prob_old) ** 2)
+        
+        
+        # sigma_old.squeeze(1,2) 
+        # lamda = 1.0 / lamda
+        # loss =   -1.0 * advantages * ratio + approx_kl 
+        # loss = torch.mean(loss)
+        # loss = self.loss(advantages, self.config.train_clip_range, ratio,lamda) + (1-torch.mean(lamda))*100.0*kl
         loss = self.loss(advantages, self.config.train_clip_range, ratio)
         clipfrac = torch.mean((torch.abs(ratio - 1.0) > self.config.train_clip_range).float())
     
@@ -558,5 +567,5 @@ class EDPOTrainer(BaseTrainer):
         print("eval:",np.mean(stable_all))
 
 if __name__ == "__main__":
-    trainer = EDPOTrainer("../outputs/edm_qm9")
+    trainer = EDDPOTrainer("../outputs/edm_qm9")
     trainer._create_edm_pipline()

@@ -3,7 +3,7 @@ import argparse
 import pickle
 import torch
 import pprint
-class EDPOConfig:
+class EDDPOConfig:
     '''
         edm_model_path :  Edm model path
     '''
@@ -15,7 +15,6 @@ class EDPOConfig:
         self.train_batch_size = 512
         self.save_freq = 1
         self.num_train_timesteps = 1000
-        self.mini_batch = 128
         # optimizer paramas ⬇
         self.train_epoch_num = 100
         self.train_learning_rate = 1e-5
@@ -82,7 +81,7 @@ class EDPOConfig:
     
 
 if __name__ == "__main__":
-    config = EDPOConfig("../outputs/edm_qm9")
+    config = EDDPOConfig("../outputs/edm_qm9")
     print(config.edm_config)
     
     
