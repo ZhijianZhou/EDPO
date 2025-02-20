@@ -13,7 +13,7 @@ class EDDPOConfig:
         self.sample_num_batches_per_epoch = 1
         self.train_num_inner_epochs = 1
         self.train_batch_size = 512
-        self.save_freq = 5
+        self.save_freq = 1
         self.num_train_timesteps = 1000
         # optimizer paramas ⬇
         self.train_epoch_num = 100
@@ -30,8 +30,11 @@ class EDDPOConfig:
         # seed ⬇
         self.seed = 3407
         # name
-        self.name = "RewardForce"
-        
+        self.name = "QM-force"
+        self.resume = False
+        if self.resume:
+            self.check_point_model_path = "./exp/RewardStableGeom/2_generative_model.npy"
+            self.check_point_optimizer_path = "./exp/RewardForceQM/55_optimize.npy"
         with open(os.path.join(edm_model_path, 'args.pickle'), 'rb') as f:
             args = pickle.load(f)
         # be careful with this -->
@@ -39,7 +42,10 @@ class EDDPOConfig:
             args.normalization_factor = 1
         if not hasattr(args, 'aggregation_method'):
             args.aggregation_method = 'sum'
-
+        if args.context_node_nf != 0:
+            self.condition = args.conditioning[0]
+        else:
+            self.condition = None
         args.cuda = not args.no_cuda and torch.cuda.is_available()
         device = torch.device("cuda" if args.cuda else "cpu")
         args.device = device

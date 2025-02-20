@@ -6,7 +6,7 @@ import random
 import matplotlib
 import imageio
 
-
+import time
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from qm9 import bond_analyze
@@ -27,7 +27,7 @@ def save_xyz_file(path, one_hot, charges, positions, dataset_info, id_from=0, na
         atomsxmol = [one_hot.size(1)] * one_hot.size(0)
 
     for batch_i in range(one_hot.size(0)):
-        f = open(path + name + '_' + "%03d.txt" % (batch_i + id_from), "w")
+        f = open(path + name + '_' + "%03d.xyz" % (batch_i + id_from), "w")
         f.write("%d\n\n" % atomsxmol[batch_i])
         atoms = torch.argmax(one_hot[batch_i], dim=1)
         n_atoms = int(atomsxmol[batch_i])
@@ -36,7 +36,26 @@ def save_xyz_file(path, one_hot, charges, positions, dataset_info, id_from=0, na
             atom = dataset_info['atom_decoder'][atom]
             f.write("%s %.9f %.9f %.9f\n" % (atom, positions[batch_i, atom_i, 0], positions[batch_i, atom_i, 1], positions[batch_i, atom_i, 2]))
         f.close()
+        
+def save_gjf_file(one_hot,positions, atom_decoder, node_mask=None,path="./Temp"):
+    header = """%mem=8gb\n%nprocshared=8\n#P B3LYP/6-31G(2df,p) nosymm Force pop=Always \n\ntest\n\n0 1\n"""
+    if node_mask is not None:
+        atomsxmol = torch.sum(node_mask, dim=1)
+    else:
+        atomsxmol = [one_hot.size(1)] * one_hot.size(0)
 
+    for batch_i in range(one_hot.size(0)):
+        f = open(os.path.join(path, f"{batch_i}.gjf"),"w")
+        f.write(header) 
+        atoms = torch.argmax(one_hot[batch_i], dim=1)
+        n_atoms = int(atomsxmol[batch_i])
+        for atom_i in range(n_atoms):
+            atom = atoms[atom_i]
+            atom = atom_decoder[atom]
+            f.write("%s %.9f %.9f %.9f\n" % (atom, positions[batch_i, atom_i, 0], positions[batch_i, atom_i, 1], positions[batch_i, atom_i, 2]))
+        f.write("\n")
+        f.close()
+    
 
 def load_molecule_xyz(file, dataset_info):
     with open(file, encoding='utf8') as f:
@@ -56,7 +75,7 @@ def load_molecule_xyz(file, dataset_info):
 
 
 def load_xyz_files(path, shuffle=True):
-    files = glob.glob(path + "/*.txt")
+    files = glob.glob(path + "/*.xyz")
     if shuffle:
         random.shuffle(files)
     return files

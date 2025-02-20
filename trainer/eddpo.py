@@ -17,6 +17,9 @@ from torch.nn.utils import clip_grad_norm_
 from qm9.analyze import check_stability
 import torch.nn as nn
 import torch.nn.init as init
+from trainer.reward import qm_reward_model
+from qm9.utils import compute_mean_mad
+
 torch.manual_seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
@@ -88,31 +91,11 @@ class EDDPOTrainer(BaseTrainer):
         self.config_path = config_path
         self.config = EDDPOConfig(config_path)
         self.generate_model = self._create_edm_pipline()
+        self.optimizer = self._setup_optimizer(self.generate_model.parameters())
+        # if self.config.resume:
+        #     self.optimizer.load_state_dict(torch.load(self.config.check_point_optimizer_path,
+        #                                 map_location=self.config.edm_config.device ))
         
-        self.fc_combined = nn.Sequential(
-            nn.Linear(9 * 29, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid()  # Sigmoid 激活函数确保输出在 0 和 1 之间
-        )
-        self._initialize_weights()
-        self.fc_combined.to(self.config.device)
-        params = list(self.generate_model.parameters()) + list(self.fc_combined.parameters())
-        self.optimizer = self._setup_optimizer(params)
-  
-    def _initialize_weights(self):
-        # 使用正态分布将 fc_combined 层的权重初始化为小值
-        for layer in self.fc_combined:
-            if isinstance(layer, nn.Linear):
-                init.normal_(layer.weight, mean=0, std=1e-6)  # 使用标准差为1e-6的正态分布初始化
-                if layer.bias is not None:
-                    init.constant_(layer.bias, 0)  # 将偏置初始化为0
-    def advantages_lamda(self,latents,next_latents):
-        dif = latents - next_latents
-        batch_size = latents.shape[0]
-        dif = dif.view(batch_size, -1)
-        res = self.fc_combined(dif)
-        return res
     def save_model(self,path,name):
         torch.save(self.generate_model.state_dict(), join(path,f"{name}_generative_model.npy"))
         torch.save(self.optimizer.state_dict(), join(path,f"{name}_optimize.npy"))
@@ -128,17 +111,23 @@ class EDDPOTrainer(BaseTrainer):
         dataset_info = get_dataset_info(edm_config.dataset, edm_config.remove_h)
 
         dataloaders, charge_scale = dataset.retrieve_dataloaders(edm_config)
-
+        if self.config.condition:
+            property_norms = compute_mean_mad(dataloaders, self.config.edm_config.conditioning, self.config.edm_config.dataset)
         flow, nodes_dist, prop_dist = get_model(edm_config, edm_config.device, dataset_info, dataloaders['train'])
         flow.to(edm_config.device)
-        
-        fn = 'generative_model_ema.npy' if edm_config.ema_decay > 0 else 'generative_model.npy'
-        flow_state_dict = torch.load(join(model_path, fn),
-                                    map_location=edm_config.device )
+        if self.config.resume :
+            flow_state_dict = torch.load(self.config.check_point_model_path,
+                                        map_location=edm_config.device )
+        else:
+            fn = 'generative_model_ema.npy' if edm_config.ema_decay > 0 else 'generative_model.npy'
+            flow_state_dict = torch.load(join(model_path, fn),
+                                        map_location=edm_config.device )
         flow.load_state_dict(flow_state_dict)
-        
+        if prop_dist is not None:
+            prop_dist.set_normalizer(property_norms)
         self.nodes_dist = nodes_dist
         self.dataset_info = dataset_info
+        self.prop_dist = prop_dist
         ## qm9 node distribution ⬆
         
         return flow
@@ -160,10 +149,12 @@ class EDDPOTrainer(BaseTrainer):
         """
         
         # 1. generate samples
+        
         samples = self._generate_samples(
             iterations=self.config.sample_num_batches_per_epoch,
             batch_size=self.config.sample_batch_size,
-            ref= False
+            ref= False,
+            condition = self.config.condition
         )
         
         # 2. compute rewards
@@ -188,8 +179,12 @@ class EDDPOTrainer(BaseTrainer):
         for inner_epoch in range(self.config.train_num_inner_epochs):
             # shuffle batch
             perm = torch.randperm(total_batch_size, device=self.config.device)
-            for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma']:
-                samples[key] = samples[key][perm]
+            if self.config.condition:
+                for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma','context']:
+                    samples[key] = samples[key][perm]
+            else:
+                for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','mu','sigma']:
+                    samples[key] = samples[key][perm]
             # shuffle timesteps
             perms = torch.stack(
                 [torch.randperm(num_timesteps+1, device=self.config.device) for _ in range(total_batch_size)]
@@ -207,7 +202,7 @@ class EDDPOTrainer(BaseTrainer):
             transposed_values = zip(*reshaped_values)
             # Create new dictionaries for each row of transposed values
             samples_batched = [dict(zip(original_keys, row_values)) for row_values in transposed_values]
-            
+            # training~
             result = self._train_batched_samples(inner_epoch, epoch, global_step, samples_batched)
             result["Stable"] = stables.mean().item()
             result["Reward"] = rewards.mean().item()
@@ -229,7 +224,7 @@ class EDDPOTrainer(BaseTrainer):
         node_mask = node_mask.unsqueeze(2).to(device)
         
         return node_mask, edge_mask
-    def _batch_samples(self, batch_size, timestep=1000, context=None, fix_noise=False, ref= False):
+    def _batch_samples(self, batch_size, timestep=1000, condition=None, fix_noise=False, ref= False):
         """
         Generate a batch of samples from the model's input distribution and process the resulting data.
 
@@ -262,13 +257,18 @@ class EDDPOTrainer(BaseTrainer):
         nodesxsample = self.nodes_dist.sample(batch_size)
         max_n_nodes = self.dataset_info['max_n_nodes']  # <- this is the maximum node_size in QM9
         node_mask,edge_mask = self.get_mask(nodesxsample,batch_size,device,max_n_nodes)
-
+        
+        if condition:
+            context = self.prop_dist.sample_batch(nodesxsample).to(device)
+            context = context.unsqueeze(1).repeat(1, max_n_nodes, 1).to(device) * node_mask
+            context = context.squeeze(-1)
+        else:
+            context = None
         # 2. generate sample from edm
-        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_eddpo(
-            batch_size, max_n_nodes, node_mask, edge_mask, context, fix_noise=fix_noise, timestep=timestep
-        )
+        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_eddpo(batch_size, max_n_nodes, node_mask, edge_mask, context = context, fix_noise=fix_noise, timestep=timestep)
        
         # 3. warp result
+        
         res = {
             "x": x,
             "h": h,
@@ -277,11 +277,13 @@ class EDDPOTrainer(BaseTrainer):
             "nodesxsample": nodesxsample.to(self.config.device),
             "timesteps":torch.tensor(timestep).to(self.config.device),
             "mu": torch.stack(mu, dim=1),
-            "sigma": torch.stack(sigma, dim=1)
+            "sigma": torch.stack(sigma, dim=1),
         }
+        if self.config.condition:
+            res["context"] = context
         
         return res
-    def _generate_samples(self, iterations, batch_size, ref = False):
+    def _generate_samples(self, iterations, batch_size, ref = False, condition = None):
         """
         Generate samples from the model
 
@@ -295,7 +297,7 @@ class EDDPOTrainer(BaseTrainer):
         
         samples = []
         for _ in tq(range(iterations),desc = "Generate samples", unit = "sample",leave=False):
-            sample = self._batch_samples(batch_size, timestep=self.config.num_train_timesteps,ref=ref)
+            sample = self._batch_samples(batch_size, timestep=self.config.num_train_timesteps,ref=ref,condition = condition)
             samples.append(sample)
             
         ## concat samples
@@ -322,7 +324,14 @@ class EDDPOTrainer(BaseTrainer):
         node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
         for i in range(x.shape[0]):
             node_mask[i, 0:nodesxsample[i]] = 1
-        
+        force = []
+        for i in tq(range(0,nodesxsample.shape[0]//128 + 1),desc="Calculate QM Forces",leave=False):
+            ptr = i*128 
+            if i != nodesxsample.shape[0]//128:
+               force_batch = qm_reward_model(one_hot[ptr:ptr+128],x[ptr:ptr+128],atom_encoder,node_mask[ptr:ptr+128],"10.245.158.28",x[ptr:ptr+128].shape[0])
+            else:
+               force_batch = qm_reward_model(one_hot[ptr:],x[ptr:],atom_encoder,node_mask[ptr:],"10.245.158.28",x[ptr:].shape[0])
+            force += force_batch
         n_samples = len(x)
         processed_list = []
         rewards = []
@@ -361,9 +370,69 @@ class EDDPOTrainer(BaseTrainer):
             # else:
             #     rewards.append(-1.0)
         # print("\n","Rewards:",np.mean(rewards),"Force:",np.mean(real_force),"Stable:", np.mean(molecule_stable))
-        print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable))
-        return rewards, molecule_stable
+        
+        print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable),"QM_force:",np.mean(force))
+        return force, molecule_stable
     
+    # def compute_rewards(self,samples):
+    #     '''
+    #     use stable as reward fuction
+    #     '''
+    #     ## encoder ['H','C','O','N','F']
+    #     atom_encoder = self.dataset_info['atom_decoder']
+    #     one_hot = samples["h"]["categorical"]
+    #     x = samples['x']
+    #     nodesxsample = samples["nodesxsample"]
+        
+    #     node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
+    #     for i in range(x.shape[0]):
+    #         node_mask[i, 0:nodesxsample[i]] = 1
+        
+    #     n_samples = len(x)
+    #     processed_list = []
+    #     rewards = []
+    #     real_force = []
+    #     molecule_stable = []
+    #     for i in range(n_samples):
+    #         atom_type = one_hot[i].argmax(1).cpu().detach()
+    #         pos = x[i].cpu().detach()
+    #         atom_type = atom_type[0:int(nodesxsample[i])]
+    #         pos = pos[0:int(nodesxsample[i])]
+    #         processed_list.append((pos, atom_type))
+    #     calc = XTB(method="GFN2-xTB")
+    #     for mol in tq(processed_list, desc="Calculate Forces",leave=False):
+    #         pos = mol[0].tolist()
+    #         atom_type = mol[1].tolist()
+    #         validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
+    #         atom_type = [atom_encoder[atom] for atom in atom_type]
+    #         molecule_stable.append(validity_results[1]/validity_results[2])
+    #         # if validity_results[0]:
+    #         #     rewards.append(1.0)
+    #         # else:
+    #         #     rewards.append(-1.0)
+    #         # # rewards.append(int(validity_results[0]))
+    #         atoms = Atoms(symbols=atom_type, positions=pos)
+    #         atoms.calc = calc
+    #         try:
+    #             forces = atoms.get_forces()
+    #             mean_abs_forces = rmsd(forces)
+    #         except:
+    #             mean_abs_forces = 5.0
+    #         # opt1 = BFGS(atoms,
+    #         #             trajectory=f'mode_pre_opt.traj',
+    #         #             logfile=f"mode_pre_opt.log")
+    #         # opt1.run(fmax=0.01)
+    #         real_force.append(mean_abs_forces)
+    #         rewards.append(-1 * mean_abs_forces)
+    #         # if mean_abs_forces < 0.30 and validity_results[0]:
+    #         #     rewards.append(1.0)
+    #         # else:
+    #         #     rewards.append(-1.0)
+    #     # print("\n","Rewards:",np.mean(rewards),"Force:",np.mean(real_force),"Stable:", np.mean(molecule_stable))
+    #     print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable))
+    #     return rewards, molecule_stable
+        
+
     def _train_batched_samples(self, inner_epoch, epoch, global_step, batched_samples):
         """
         Train on a batch of samples. Main training segment
@@ -386,7 +455,7 @@ class EDDPOTrainer(BaseTrainer):
         self.T = self.config.num_train_timesteps+1
         for _i, sample in tq(enumerate(batched_samples),desc= "Training", unit="Batch",leave=False):
             for j in tq(range(self.T ),desc= "Training Batch", unit="timesteps",leave=False):
-                loss, approx_kl, clipfrac, lamda = self.calculate_loss(
+                loss, approx_kl, clipfrac = self.calculate_loss(
                         sample["latents"][:, j],
                         sample["timesteps"][:, j],
                         sample["next_latents"][:, j],
@@ -399,7 +468,6 @@ class EDDPOTrainer(BaseTrainer):
                 info["approx_kl"].append(approx_kl.item())
                 info["clipfrac"].append(clipfrac.item())
                 info["loss"].append(loss.item())
-                info["lamda"].append(lamda.item())
                 loss = loss / self.config.num_train_timesteps 
                 loss.backward()
             clip_grad_norm_(self.generate_model.parameters(),max_norm=1)
@@ -459,7 +527,8 @@ class EDDPOTrainer(BaseTrainer):
         s_array = s_array / self.config.num_train_timesteps
         t_array = t_array / self.config.num_train_timesteps
         node_mask, edge_mask = self.get_mask(nodesxsample,self.config.train_batch_size,self.config.device,self.dataset_info['max_n_nodes'])
-        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_eddpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents)
+        ## need credit
+        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_eddpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents,context=context)
         
 
         ## log_prob is old latents in new policy
@@ -476,7 +545,6 @@ class EDDPOTrainer(BaseTrainer):
         ratio = torch.exp(dif_logp)
         
         # import pdb;pdb.set_trace()
-        lamda = self.advantages_lamda(latents,next_latents).squeeze(-1)
 
         kl = torch.mean(kl_divergence_normal(mu_current*node_mask,sigma_current,mu_old*node_mask))
         # approx_kl = 0.5 * torch.mean((log_prob_current - log_prob_old) ** 2)
@@ -487,20 +555,19 @@ class EDDPOTrainer(BaseTrainer):
         # loss =   -1.0 * advantages * ratio + approx_kl 
         # loss = torch.mean(loss)
         # loss = self.loss(advantages, self.config.train_clip_range, ratio,lamda) + (1-torch.mean(lamda))*100.0*kl
-        loss = self.loss(advantages, self.config.train_clip_range, ratio,lamda)
+        loss = self.loss(advantages, self.config.train_clip_range, ratio)
         clipfrac = torch.mean((torch.abs(ratio - 1.0) > self.config.train_clip_range).float())
     
-        return loss, kl, clipfrac, lamda.mean()
+        return loss, kl, clipfrac
     
     def loss(
         self,
         advantages: torch.Tensor,
         clip_range: float,
         ratio: torch.Tensor,
-        lamda: torch.Tensor
     ):
-        unclipped_loss =    -1.0 * advantages * lamda * ratio
-        clipped_loss =   -1.0  * advantages * lamda * torch.clamp(
+        unclipped_loss =    -1.0 * advantages * ratio
+        clipped_loss =   -1.0  * advantages * torch.clamp(
             ratio,
             1.0 - clip_range,
             1.0 + clip_range,

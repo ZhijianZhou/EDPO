@@ -53,7 +53,7 @@ class EGNN_dynamics_QM9(nn.Module):
         edges = [x.to(self.device) for x in edges]
         node_mask = node_mask.view(bs*n_nodes, 1)
         edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1)
-        xh = xh.view(bs*n_nodes, -1).clone() * node_mask
+        xh = xh.reshape(bs * n_nodes, -1).clone() * node_mask
         x = xh[:, 0:self.n_dims].clone()
         if h_dims == 0:
             h = torch.ones(bs*n_nodes, 1).to(self.device)
@@ -99,6 +99,7 @@ class EGNN_dynamics_QM9(nn.Module):
 
         if torch.any(torch.isnan(vel)):
             print('Warning: detected nan, resetting EGNN output to zero.')
+            assert not torch.isnan(vel).any()
             vel = torch.zeros_like(vel)
 
         if node_mask is None:

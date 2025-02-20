@@ -245,6 +245,40 @@ def check_stability(positions, atom_type, dataset_info, debug=False):
     molecule_stable = nr_stable_bonds == len(x)
     return molecule_stable, nr_stable_bonds, len(x)
 
+def check_stability_simple(positions, atom_type):
+    assert len(positions.shape) == 2
+    assert positions.shape[1] == 3
+   
+    x = positions[:, 0]
+    y = positions[:, 1]
+    z = positions[:, 2]
+
+    nr_bonds = np.zeros(len(x), dtype='int')
+
+    for i in range(len(x)):
+        for j in range(i + 1, len(x)):
+            p1 = np.array([x[i], y[i], z[i]])
+            p2 = np.array([x[j], y[j], z[j]])
+            dist = np.sqrt(np.sum((p1 - p2) ** 2))
+            atom1, atom2 = atom_type[i], atom_type[j]
+            pair = sorted([atom_type[i], atom_type[j]])
+            order = bond_analyze.get_bond_order(atom1, atom2, dist)
+
+            nr_bonds[i] += order
+            nr_bonds[j] += order
+    nr_stable_bonds = 0
+    for atom_type_i, nr_bonds_i in zip(atom_type, nr_bonds):
+        possible_bonds = bond_analyze.allowed_bonds[atom_type_i]
+        if type(possible_bonds) == int:
+            is_stable = possible_bonds == nr_bonds_i
+        else:
+            is_stable = nr_bonds_i in possible_bonds
+        # if not is_stable:
+        #     print("Invalid bonds for molecule %s with %d bonds" % (atom_decoder[atom_type_i], nr_bonds_i))
+        nr_stable_bonds += int(is_stable)
+
+    molecule_stable = nr_stable_bonds == len(x)
+    return molecule_stable, nr_stable_bonds, len(x)
 
 def process_loader(dataloader):
     """ Mask atoms, return positions and atom types"""

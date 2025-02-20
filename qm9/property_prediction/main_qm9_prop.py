@@ -196,7 +196,7 @@ if __name__ == "__main__":
 
     for epoch in range(0, args.epochs):
         train(model, epoch, dataloaders['train'], mean, mad, args.property, device, partition='train', optimizer=optimizer, lr_scheduler=lr_scheduler, log_interval=args.log_interval)
-        if epoch % args.test_interval == 0:
+        if epoch % args.test_interval == 0 and epoch > 1000:
             val_loss = train(model, epoch, dataloaders['valid'], mean, mad, args.property, device, partition='valid', optimizer=optimizer, lr_scheduler=lr_scheduler, log_interval=args.log_interval)
             test_loss = test(model, epoch, dataloaders['test'], mean, mad, args.property, device, log_interval=args.log_interval)
             res['epochs'].append(epoch)
