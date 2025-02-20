@@ -1,7 +1,7 @@
 import os
 os.environ["OMP_NUM_THREADS"] = "18"
 from collections import defaultdict
-from trainer.eddpo_config import EDDPOConfig
+from trainer.edpo_config import EDPOConfig
 from configs.datasets_config import get_dataset_info
 from qm9 import dataset
 from qm9.models import get_model
@@ -48,37 +48,40 @@ def kl_divergence_normal(mu_P, sigma_P, mu_Q):
     kl_div = term2 + term3
     return kl_div
 
+import numpy as np
+
 def rmsd(A, B=None):
     """
-    计算两个二维矩阵 A 和 B 之间的 RMSD (Root Mean Square Deviation)。
-    如果未提供 B，则默认将 B 设为全零矩阵。
+    Calculate the RMSD (Root Mean Square Deviation) between two 2D matrices A and B.
+    If B is not provided, it defaults to a zero matrix.
 
-    参数:
-    A: numpy.ndarray, 形状为 (m, n)
-    B: numpy.ndarray, 形状为 (m, n)，默认为 None，若为 None，B 将被设置为全零矩阵
+    Parameters:
+    A: numpy.ndarray, shape (m, n)
+    B: numpy.ndarray, shape (m, n), default is None. If None, B will be set to a zero matrix.
     
-    返回:
-    float: RMSD 值
+    Returns:
+    float: RMSD value
     """
-    # 如果 B 为 None，则将 B 设为与 A 相同形状的全零矩阵
+    # If B is None, set B to a zero matrix with the same shape as A
     if B is None:
         B = np.zeros_like(A)
 
-    # 确保输入矩阵 A 和 B 具有相同的形状
+    # Ensure matrices A and B have the same shape
     if A.shape != B.shape:
-        raise ValueError("输入的矩阵 A 和 B 必须具有相同的形状")
+        raise ValueError("The input matrices A and B must have the same shape")
     
-    # 计算矩阵 A 和 B 之间的差异的平方
+    # Calculate the squared differences between matrices A and B
     diff = A - B
     squared_diff = np.square(diff)
     
-    # 计算均方根偏差 (RMSD)
+    # Compute the root mean square deviation (RMSD)
     rmsd_value = np.sqrt(np.mean(squared_diff))
     
     return rmsd_value
-class EDDPOTrainer(BaseTrainer):
+
+class EDPOTrainer(BaseTrainer):
     """
-    The EDDPOTrainer uses e3nn diffusion policy optimization to optimise diffusion models.
+    The EDPOTrainer uses e3nn diffusion policy optimization to optimise diffusion models.
     Attributes:
         **config**
         **reward_fuction**
@@ -89,7 +92,7 @@ class EDDPOTrainer(BaseTrainer):
         config_path,
     ):
         self.config_path = config_path
-        self.config = EDDPOConfig(config_path)
+        self.config = EDPOConfig(config_path)
         self.generate_model = self._create_edm_pipline()
         self.optimizer = self._setup_optimizer(self.generate_model.parameters())
         # if self.config.resume:
@@ -265,7 +268,7 @@ class EDDPOTrainer(BaseTrainer):
         else:
             context = None
         # 2. generate sample from edm
-        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_eddpo(batch_size, max_n_nodes, node_mask, edge_mask, context = context, fix_noise=fix_noise, timestep=timestep)
+        x, h, latents, logps, timestep, mu, sigma = self.generate_model.sample_edpo(batch_size, max_n_nodes, node_mask, edge_mask, context = context, fix_noise=fix_noise, timestep=timestep)
        
         # 3. warp result
         
@@ -528,7 +531,7 @@ class EDDPOTrainer(BaseTrainer):
         t_array = t_array / self.config.num_train_timesteps
         node_mask, edge_mask = self.get_mask(nodesxsample,self.config.train_batch_size,self.config.device,self.dataset_info['max_n_nodes'])
         ## need credit
-        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_eddpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents,context=context)
+        latents, log_prob_current, mu_current, sigma_current = self.generate_model.sample_p_zs_given_zt_edpo(s_array, t_array, latents, node_mask, edge_mask,prev_sample=next_latents,context=context)
         
 
         ## log_prob is old latents in new policy
@@ -591,5 +594,5 @@ class EDDPOTrainer(BaseTrainer):
         print("eval:",np.mean(stable_all))
 
 if __name__ == "__main__":
-    trainer = EDDPOTrainer("../outputs/edm_qm9")
+    trainer = EDPOTrainer("../outputs/edm_qm9")
     trainer._create_edm_pipline()
