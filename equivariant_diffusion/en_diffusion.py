@@ -497,7 +497,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         h_int = torch.round(h_int).long() * node_mask
         h = {'integer': h_int, 'categorical': h_cat}
         return x, h
-    def sample_p_xh_given_z0_eddpo(self, z0, node_mask, edge_mask, context, fix_noise=False, prev_sample=None):
+    def sample_p_xh_given_z0_edpo(self, z0, node_mask, edge_mask, context, fix_noise=False, prev_sample=None):
         """Samples x ~ p(x|z0)."""
         
         zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
@@ -513,9 +513,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
         if prev_sample != None :
             # import pdb; pdb.set_trace()
-            log_p = self.compute_log_p_zs_given_zt(prev_sample, mu_x, sigma_x, eddpo=True, node_mask = node_mask)
+            log_p = self.compute_log_p_zs_given_zt(prev_sample, mu_x, sigma_x, edpo=True, node_mask = node_mask)
         else:
-            log_p = self.compute_log_p_zs_given_zt(xh, mu_x, sigma_x, eddpo=False, node_mask = node_mask)
+            log_p = self.compute_log_p_zs_given_zt(xh, mu_x, sigma_x, edpo=False, node_mask = node_mask)
         x = xh[:, :, :self.n_dims]
 
         h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
@@ -743,7 +743,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return neg_log_pxh
 
-    def compute_log_p_zs_given_zt(self, x, mu, sigma,eddpo = False,node_mask = None):
+    def compute_log_p_zs_given_zt(self, x, mu, sigma,edpo = False,node_mask = None):
         '''
         Compute log p(zs | zt) for a Gaussian distribution.
 
@@ -759,7 +759,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         epsilon = 1e-6
         sigma = torch.max(sigma, torch.tensor(epsilon, device=sigma.device))
 
-        delta = x.detach() if eddpo else x
+        delta = x.detach() if edpo else x
         
         log_p = -0.5 * ((delta - mu) ** 2) / (sigma ** 2) * node_mask
         # Sum over dimensions and normalize
@@ -798,7 +798,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         )
         return zs
     
-    def sample_p_zs_given_zt_eddpo(self, s, t, zt, node_mask, edge_mask, context=None, fix_noise=False,prev_sample=None):
+    def sample_p_zs_given_zt_edpo(self, s, t, zt, node_mask, edge_mask, context=None, fix_noise=False,prev_sample=None):
         """Samples from zs ~ p(zs | zt). """
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
@@ -834,9 +834,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         if prev_sample != None :
             # import pdb; pdb.set_trace()
-            log_p = self.compute_log_p_zs_given_zt(prev_sample,mu,sigma,eddpo=True,node_mask = node_mask)
+            log_p = self.compute_log_p_zs_given_zt(prev_sample,mu,sigma,edpo=True,node_mask = node_mask)
         else:
-            log_p = self.compute_log_p_zs_given_zt(zs,mu,sigma,eddpo=False,node_mask = node_mask)
+            log_p = self.compute_log_p_zs_given_zt(zs,mu,sigma,edpo=False,node_mask = node_mask)
             
         return zs,log_p,mu,sigma
 
@@ -855,7 +855,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         return z
     
     @torch.no_grad()
-    def sample_eddpo(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False,timestep = 1000):
+    def sample_edpo(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False,timestep = 1000):
         """
         Draw samples from the generative model.
         """
@@ -879,7 +879,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_array = s_array + 1
             s_array = s_array / self.T
             t_array = t_array / self.T
-            z, logp, mu, sigma= self.sample_p_zs_given_zt_eddpo(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
+            z, logp, mu, sigma= self.sample_p_zs_given_zt_edpo(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
             latents.append(z)
             logps.append(logp)
             timesteps.append(s)
@@ -887,7 +887,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             sigmas.append(sigma)
         
         # Finally sample p(x, h | z_0).
-        x, h, mu, sigma, logp, s, z = self.sample_p_xh_given_z0_eddpo(z, node_mask, edge_mask, context, fix_noise=fix_noise)
+        x, h, mu, sigma, logp, s, z = self.sample_p_xh_given_z0_edpo(z, node_mask, edge_mask, context, fix_noise=fix_noise)
 
         latents.append(z)
         logps.append(logp)
