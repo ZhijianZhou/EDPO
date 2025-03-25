@@ -31,7 +31,7 @@ class EDPOConfig:
         # seed ⬇
         self.seed = 3407
         # name
-        self.name = "QM-force"
+        self.name = "stable-test"
         self.resume = False
         if self.resume:
             self.check_point_model_path = "./exp/RewardStableGeom/2_generative_model.npy"

@@ -97,7 +97,7 @@ class EDPOTrainer(BaseTrainer):
         self.config = EDPOConfig(config_path)
         self.generate_model = self._create_edm_pipline()
         self.optimizer = self._setup_optimizer(self.generate_model.parameters())
-        self.config["reward"] = reward
+        self.config.reward  = reward
         if resume:
             self.optimizer.load_state_dict(torch.load(self.config.check_point_optimizer_path,
                                         map_location=self.config.edm_config.device ))
@@ -326,19 +326,8 @@ class EDPOTrainer(BaseTrainer):
         node_mask = torch.zeros(x.shape[0], self.dataset_info['max_n_nodes'])
         for i in range(x.shape[0]):
             node_mask[i, 0:nodesxsample[i]] = 1
-        force = []
-        mini_batch_size = self.config.mini_batch
-        for i in tq(range(0,nodesxsample.shape[0]//mini_batch_size + 1),desc="Calculate QM Forces",leave=False):
-            ptr = i*mini_batch_size 
-            if i != nodesxsample.shape[0]//mini_batch_size:
-               force_batch = qm_reward_model(one_hot[ptr:ptr+mini_batch_size],x[ptr:ptr+mini_batch_size],atom_encoder,node_mask[ptr:ptr+mini_batch_size],"10.245.158.28",x[ptr:ptr+128].shape[0])
-            else:
-               force_batch = qm_reward_model(one_hot[ptr:],x[ptr:],atom_encoder,node_mask[ptr:],"10.245.158.28",x[ptr:].shape[0])
-            force += force_batch
-            
         n_samples = len(x)
         processed_list = []
-        rewards = []
         real_force = []
         molecule_stable = []
         for i in range(n_samples):
@@ -347,22 +336,50 @@ class EDPOTrainer(BaseTrainer):
             atom_type = atom_type[0:int(nodesxsample[i])]
             pos = pos[0:int(nodesxsample[i])]
             processed_list.append((pos, atom_type))
-        calc = XTB(method="GFN2-xTB")
-        for mol in tq(processed_list, desc="Calculate Forces",leave=False):
-            pos = mol[0].tolist()
-            atom_type = mol[1].tolist()
-            validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
-            atom_type = [atom_encoder[atom] for atom in atom_type]
-            molecule_stable.append(int(validity_results[0]))
-            atoms = Atoms(symbols=atom_type, positions=pos)
-            atoms.calc = calc
-            forces = atoms.get_forces()
-            mean_abs_forces = rmsd(forces)
-            real_force.append(mean_abs_forces)
-            rewards.append(-1 * mean_abs_forces)
-        
-        print("\n","Rewards:",np.mean(rewards),"Stable:", np.mean(molecule_stable),"QM_force:",np.mean(force))
-        return force, molecule_stable
+        rewards = []
+        if self.config.reward == "Stable":
+            for mol in tq(processed_list, desc="Calculate Reward",leave=False):
+                pos = mol[0].tolist()
+                atom_type = mol[1].tolist()
+                validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
+                molecule_stable.append(int(validity_results[0]))
+                if validity_results[0]:
+                    rewards.append(1)
+                else:
+                    rewards.append(-1)
+            return rewards, molecule_stable
+        elif self.config.reward == "QM":
+            force = []
+            mini_batch_size = self.config.mini_batch
+            for i in tq(range(0,nodesxsample.shape[0]//mini_batch_size + 1),desc="Calculate QM Forces",leave=False):
+                ptr = i*mini_batch_size 
+                if i != nodesxsample.shape[0]//mini_batch_size:
+                    force_batch = qm_reward_model(one_hot[ptr:ptr+mini_batch_size],x[ptr:ptr+mini_batch_size],atom_encoder,node_mask[ptr:ptr+mini_batch_size],"10.245.158.28",x[ptr:ptr+128].shape[0])
+                else:
+                    force_batch = qm_reward_model(one_hot[ptr:],x[ptr:],atom_encoder,node_mask[ptr:],"10.245.158.28",x[ptr:].shape[0])
+                    force += force_batch
+            for mol in tq(processed_list, desc="Calculate Reward",leave=False):
+                pos = mol[0].tolist()
+                atom_type = mol[1].tolist()
+                validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
+                molecule_stable.append(int(validity_results[0]))
+            rewards = force
+            return rewards, molecule_stable
+        elif self.config.reward == "xTB":
+            calc = XTB(method="GFN2-xTB")
+            for mol in tq(processed_list, desc="Calculate Forces",leave=False):
+                pos = mol[0].tolist()
+                atom_type = mol[1].tolist()
+                validity_results = check_stability(np.array(pos), atom_type, self.dataset_info)
+                atom_type = [atom_encoder[atom] for atom in atom_type]
+                molecule_stable.append(int(validity_results[0]))
+                atoms = Atoms(symbols=atom_type, positions=pos)
+                atoms.calc = calc
+                forces = atoms.get_forces()
+                mean_abs_forces = rmsd(forces)
+                real_force.append(mean_abs_forces)
+                rewards.append(-1 * mean_abs_forces)
+            return rewards, molecule_stable
     
     # def compute_rewards(self,samples):
     #     '''
@@ -458,7 +475,7 @@ class EDPOTrainer(BaseTrainer):
                 info["approx_kl"].append(approx_kl.item())
                 info["clipfrac"].append(clipfrac.item())
                 info["loss"].append(loss.item())
-                loss = loss / self.config.num_train_timesteps 
+                # loss = loss / self.config.num_train_timesteps 
                 loss.backward()
             clip_grad_norm_(self.generate_model.parameters(),max_norm=1)
             self.optimizer.step()
