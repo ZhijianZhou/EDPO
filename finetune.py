@@ -6,6 +6,7 @@ import torch
 import numpy
 import random
 import pprint
+import argparse
 def set_seed(seed):
     random.seed(seed)      
     torch.manual_seed(seed) 
@@ -13,7 +14,7 @@ def set_seed(seed):
 def parse_args():
     parser = argparse.ArgumentParser(description="EDPO Trainer Script")
     parser.add_argument('--config_path', type=str, required=True, help="Path to the configuration file")
-    parser.add_argument('--reward', type=float, required=True, help="Reward value to be used in training")
+    parser.add_argument('--reward', type=str, required=True, help="Reward value to be used in training")
     parser.add_argument('--resume', type=bool, default=False, help="Whether to resume training from checkpoint")
     return parser.parse_args()
 
