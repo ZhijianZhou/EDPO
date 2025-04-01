@@ -7,3 +7,4 @@ tqdm
 wandb
 rdkit
 matplotlib
+trl==0.12.1
