@@ -222,7 +222,7 @@ class DDPOTrainer(BaseTrainer):
             if metrics['reward'] > self.best_reward:
                 self.best_reward = metrics['reward']
                 
-                torch.save(self.generate_model.state_dict(),os.path.join(self.save_path, 'generative_model_ema.npy'))
+                torch.save(self.model.tate_dict(),os.path.join(self.save_path, 'generative_model_ema.npy'))
                 torch.save(checkpoint, os.path.join(self.save_path, 'checkpoint_best.pth'))
     
     def load_checkpoint(self, checkpoint_path):
