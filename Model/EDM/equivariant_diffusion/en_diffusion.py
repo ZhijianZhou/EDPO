@@ -498,36 +498,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         h = {'integer': h_int, 'categorical': h_cat}
         return x, h
     
-    def sample_p_xh_given_z0_edpo(self, z0, node_mask, edge_mask, context, fix_noise=False, prev_sample=None):
-        """Samples x ~ p(x|z0)."""
-        
-        zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
-        gamma_0 = self.gamma(zeros)
-        # Computes sqrt(sigma_0^2 / alpha_0^2)
-
-        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
-        net_out = self.phi(z0, zeros, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        mu_x = self.compute_x_pred(net_out, z0, gamma_0)
-
-        xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
-        if prev_sample != None :
-            # import pdb; pdb.set_trace()
-            log_p = self.compute_log_p_zs_given_zt(prev_sample, mu_x, sigma_x, edpo=True, node_mask = node_mask)
-        else:
-            log_p = self.compute_log_p_zs_given_zt(xh, mu_x, sigma_x, edpo=False, node_mask = node_mask)
-        x = xh[:, :, :self.n_dims]
-
-        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
-
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        h_int = torch.round(h_int).long() * node_mask
-        h = {'integer': h_int, 'categorical': h_cat}
-
-        return x, h, mu_x, sigma_x.squeeze(-1), log_p, zeros, xh
-
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False):
         """Samples from a Normal distribution."""
         bs = 1 if fix_noise else mu.size(0)
@@ -744,28 +714,6 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return neg_log_pxh
 
-    def compute_log_p_zs_given_zt(self, x, mu, sigma,edpo = False,node_mask = None):
-        '''
-        Compute log p(zs | zt) for a Gaussian distribution.
-
-        Args:
-            x (Tensor): The input tensor (e.g., zs values).
-            mu (Tensor): The mean tensor (e.g., zt values).
-            sigma (Tensor): The standard deviation tensor (e.g., sigma values).
-
-        Returns:
-            Tensor: The log of the probability p(zs | zt).
-        '''
-        # Ensure sigma is positive to avoid numerical issues
-        epsilon = 1e-6
-        sigma = torch.max(sigma, torch.tensor(epsilon, device=sigma.device))
-
-        delta = x.detach()
-        
-        log_p = -0.5 * ((delta - mu) ** 2) / (sigma ** 2) * node_mask
-        # Sum over dimensions and normalize
-        p_zs_zt = log_p.sum(dim=tuple(range(1, log_p.ndim))) / (node_mask.sum(dim=tuple(range(1, node_mask.ndim))) * 9)
-        return p_zs_zt 
     def compute_deterministic_logp(mu, zt, node_mask, eps=1e-5):
         """
         Approximate deterministic log probability using Gaussian with tiny variance.
@@ -806,95 +754,6 @@ class EnVariationalDiffusion(torch.nn.Module):
              zs[:, :, self.n_dims:]], dim=2
         )
         return zs
-
-    
-    def sample_p_zs_given_zt_edpo(self, s, t, zt, node_mask, edge_mask, context=None, fix_noise=False,prev_sample=None):
-        """Samples from zs ~ p(zs | zt). """
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-        # Neural net prediction 
-        
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
-        diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
-        mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        
-        # Project down to avoid numerical runaway of the center of gravity.
-        zs = torch.cat(
-            [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims],
-                                                   node_mask),
-             zs[:, :, self.n_dims:]], dim=2
-        )
-        
-        # compute logp
-        
-        if prev_sample != None :
-            # import pdb; pdb.set_trace()
-            log_p = self.compute_log_p_zs_given_zt(prev_sample,mu,sigma,edpo=True,node_mask = node_mask)
-        else:
-            log_p = self.compute_log_p_zs_given_zt(zs,mu,sigma,edpo=False,node_mask = node_mask)
-            
-        return zs,log_p,mu,sigma
-    
-    def sample_ddim_zs_given_zt_edpo(self, s, t, zt, node_mask, edge_mask, context, eta, fix_noise=False,prev_sample=None):
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma_t = self.sigma(gamma_t, zt)
-        alpha_t = 1 - sigma_t.pow(2)
-        sigma_s = self.sigma(gamma_s, zt)
-        alpha_s = 1 - sigma_s.pow(2)
-
-        # Neural net prediction
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-        
-        diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
-        diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
-        
-
-        pred_x0 = (zt - sigma_t * eps_t) / torch.sqrt(alpha_t)
-        pred_x0 = torch.cat([
-            diffusion_utils.remove_mean_with_mask(pred_x0[:, :, :self.n_dims], node_mask),
-            pred_x0[:, :, self.n_dims:]
-        ], dim=2)
-        # Calculate variance term
-        var_ratio = (1 - alpha_s) / (1 - alpha_t)
-        var = var_ratio * (1 - alpha_t / alpha_s)
-        sigma = eta * torch.sqrt(var)
-
-        mean_coeff1 = torch.sqrt(alpha_s)
-        mean_coeff2 = torch.sqrt((1 - alpha_s - sigma**2))
-        
-        mu = mean_coeff1 * pred_x0 + mean_coeff2 * eps_t
-
-        # Sample zs
-        zs= self.sample_normal(mu, sigma, node_mask, fix_noise)
-
-        zs = torch.cat([
-            diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
-            zs[:, :, self.n_dims:]
-        ], dim=2)
-        
-        if prev_sample != None :
-            log_p = self.compute_log_p_zs_given_zt(prev_sample, mu, sigma, edpo=True, node_mask = node_mask) 
-        else:
-            log_p = self.compute_log_p_zs_given_zt(zs, mu, sigma, edpo=False, node_mask = node_mask) 
-            
-        return zs,log_p,mu,sigma
     
     def sample_ddim_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, eta=0, fix_noise=False, compute_logp=False):
         gamma_s = self.gamma(s)
@@ -1017,112 +876,6 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return x, h
     
-    @torch.no_grad()
-    def sample_ddim_edpo(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, timestep=50, eta=1):
-        """
-        Draw samples from the generative model using DDIM sampling, aligned with EDPO sampling style.
-
-        Parameters:
-            eta (float): controls the stochasticity of the sampling.
-                        eta=0 corresponds to deterministic DDIM sampling.
-        """
-        self.T = timestep
-
-        if fix_noise:
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        else:
-            z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-
-        diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
-
-        latents = [z]
-        logps = []
-        timesteps = []
-        mus = []
-        sigmas = []
-
-        for s in reversed(range(0, self.T)):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-
-            z, logp, mu, sigma = self.sample_ddim_zs_given_zt_edpo(s_array, t_array, z, node_mask, edge_mask, context, eta, fix_noise)
-
-            latents.append(z)
-            logps.append(logp)
-            timesteps.append(s)
-            mus.append(mu)
-            sigmas.append(sigma)
-
-        # Finally sample p(x, h | z_0)
-        x, h, mu, sigma, logp, s, z = self.sample_p_xh_given_z0_edpo(z, node_mask, edge_mask, context, fix_noise=fix_noise)
-
-        latents.append(z)
-        logps.append(logp)
-        timesteps.append(0)
-        mus.append(mu)
-        sigmas.append(sigma.unsqueeze(-1))
-
-        diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
-
-        max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-        if max_cog > 5e-2:
-            print(f'Warning cog drift with error {max_cog:.3f}. Projecting positions down.')
-            x = diffusion_utils.remove_mean_with_mask(x, node_mask)
-
-        return x, h, latents, logps, timesteps, mus, sigmas
-
-    @torch.no_grad()
-    def sample_edpo(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False,timestep = 1000):
-        """
-        Draw samples from the generative model.
-        """
-        self.T = timestep
-        if fix_noise:
-            # Noise is broadcasted over the batch axis, useful for visualizations.
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        else:
-            z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-
-        diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
-        latents = []
-        logps = []
-        timesteps = []
-        mus = []
-        sigmas = []
-        latents.append(z)
-        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s in tq(reversed(range(0, self.T)),desc="sampling",leave=False,unit="step"):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-            z, logp, mu, sigma= self.sample_p_zs_given_zt_edpo(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
-            latents.append(z)
-            logps.append(logp)
-            timesteps.append(s)
-            mus.append(mu)
-            sigmas.append(sigma)
-        
-        # Finally sample p(x, h | z_0).
-        x, h, mu, sigma, logp, s, z = self.sample_p_xh_given_z0_edpo(z, node_mask, edge_mask, context, fix_noise=fix_noise)
-
-        latents.append(z)
-        logps.append(logp)
-        timesteps.append(0)
-        mus.append(mu)
-        sigmas.append(sigma.unsqueeze(-1))
-        
-        diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
-
-        max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-        if max_cog > 5e-2:
-            print(f'Warning cog drift with error {max_cog:.3f}. Projecting '
-                  f'the positions down.')
-            x = diffusion_utils.remove_mean_with_mask(x, node_mask)
-
-        return x, h, latents, logps, timesteps, mus, sigmas
     
     @torch.no_grad()
     def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False,timestep = 1000):

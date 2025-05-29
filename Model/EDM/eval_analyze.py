@@ -258,7 +258,7 @@ def main():
     "Model Name": [eval_args.model_name]
 }
     df_new = pd.DataFrame(data)
-    file_name = "model_rebuttal.csv"
+    file_name = "result.csv"
     file_path = os.path.join(os.getcwd(), file_name)
     if os.path.exists(file_path):
         df_new.to_csv(file_path, mode='a', index=False, header=False)
