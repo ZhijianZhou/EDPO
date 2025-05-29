@@ -51,6 +51,9 @@ bash example/edm_ddpo_xtb/run.sh
 ```
 
 ### 3. Eval on QM9 molecule generation
+```bash
+bash example/edm_ddpo_xtb/run_eval.sh
+```
 
 ## Getting Started with RLPF
 
