@@ -762,7 +762,7 @@ class DataProtoFuture:
 
 import torch.distributed
 
-from verl.utils.torch_functional import allgather_dict_tensors
+from verl_diffusion.utils.torch_functional import allgather_dict_tensors
 
 
 def all_gather_data_proto(data: DataProto, process_group):
