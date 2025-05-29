@@ -174,37 +174,36 @@ def main():
     generative_model.to(device)
 
     fn = eval_args.model_name
-    print("Model Name:", fn)
-    # fn =  "generative_model_ema_50.npy"
-    # print(join(eval_args.model_path, "generative_model_ema_50.npy"))
-    # flow_state_dict = torch.load(join(eval_args.model_path, fn), map_location=device)
-    checkpoint = torch.load(join(eval_args.model_path, fn), map_location=device, weights_only=False)
+
+    print(join(eval_args.model_path, fn))
+    flow_state_dict = torch.load(join(eval_args.model_path, fn), map_location=device)
+    # checkpoint = torch.load(join(eval_args.model_path, fn), map_location=device, weights_only=False)
    
     # new_state_dict = {}
     # for key, value in flow_state_dict.items():
     #     new_key = key.replace("module.", "")  # 去掉 "module." 前缀
     #     new_state_dict[new_key] = value
-    # generative_model.load_state_dict(new_state_dict)
-    if not eval_args.ddp:
-        # Remove 'model.' prefix from state dict keys
-        new_state_dict = {}
-        for key, value in checkpoint['model_state_dict'].items():
-            if key.startswith('model.'):
-                new_key = key[6:]  # Remove 'model.' prefix
-            else:
-                new_key = key
-            new_state_dict[new_key] = value
-        generative_model.load_state_dict(new_state_dict)
-    else:
-        new_state_dict = {}
-        for key, value in checkpoint['model_state_dict'].items():
-            if key.startswith('model.'):
-                new_key = key[6:]  # Remove 'model.' prefix
-            else:
-                new_key = key
-            new_key = new_key.replace("module.", "")  # Remove "module." prefix if present
-            new_state_dict[new_key] = value
-        generative_model.load_state_dict(new_state_dict)
+    generative_model.load_state_dict(flow_state_dict)
+    # if not eval_args.ddp:
+    #     # Remove 'model.' prefix from state dict keys
+    #     new_state_dict = {}
+    #     for key, value in checkpoint['model_state_dict'].items():
+    #         if key.startswith('model.'):
+    #             new_key = key[6:]  # Remove 'model.' prefix
+    #         else:
+    #             new_key = key
+    #         new_state_dict[new_key] = value
+    #     generative_model.load_state_dict(new_state_dict)
+    # else:
+    #     new_state_dict = {}
+    #     for key, value in checkpoint['model_state_dict'].items():
+    #         if key.startswith('model.'):
+    #             new_key = key[6:]  # Remove 'model.' prefix
+    #         else:
+    #             new_key = key
+    #         new_key = new_key.replace("module.", "")  # Remove "module." prefix if present
+    #         new_state_dict[new_key] = value
+    #     generative_model.load_state_dict(new_state_dict)
     # Analyze stability, validity, uniqueness and novelty
     stability_dict, rdkit_metrics = analyze_and_save(
         args, eval_args, device, generative_model, nodes_dist,
