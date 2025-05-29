@@ -5,8 +5,8 @@ try:
 except ModuleNotFoundError:
     pass
 import argparse
-from qm9 import dataset
-from qm9.models import get_model
+from Model.EDM.qm9 import dataset
+from Model.EDM.qm9.models import get_model
 import os
 from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_with_mask,\
     assert_correctly_masked
@@ -15,14 +15,14 @@ import time
 import pickle
 from configs.datasets_config import get_dataset_info
 from os.path import join
-from qm9.sampling import sample
-from qm9.analyze import analyze_stability_for_molecules, analyze_node_distribution
-from qm9.utils import prepare_context, compute_mean_mad
-from qm9 import visualizer as qm9_visualizer
-import qm9.losses as losses
-from qm9.analyze import check_stability 
+from Model.EDM.qm9.sampling import sample
+from Model.EDM.qm9.analyze import analyze_stability_for_molecules, analyze_node_distribution
+from Model.EDM.qm9.utils import prepare_context, compute_mean_mad
+from Model.EDM.qm9 import visualizer as qm9_visualizer
+import Model.EDM.qm9.losses as losses
+from Model.EDM.qm9.analyze import check_stability 
 try:
-    from qm9 import rdkit_functions
+    from Model.EDM.qm9 import rdkit_functions
 except ModuleNotFoundError:
     print('Not importing rdkit functions.')
 import datetime
