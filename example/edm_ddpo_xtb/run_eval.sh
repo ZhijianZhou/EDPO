@@ -2,7 +2,7 @@
 cd ./Model/EDM
 
 MODEL_PATHS=(
-    "./exp/edm-xtb"
+    "../../exp/edm-xtb"
 )
 
 STEP_SETS=(
