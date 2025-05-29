@@ -32,6 +32,9 @@ pip install -r requirements.txt
 cd RLPF
 git clone https://github.com/grimme-lab/xtb-python.git
 cd xtb-python
+conda install mkl mkl-devel
+conda install -c conda-forge "gfortran<12"
+conda install -c conda-forge mkl mkl-devel blas lapack
 pip install .
 cd ..
 ```
