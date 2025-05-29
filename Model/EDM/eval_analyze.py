@@ -159,7 +159,7 @@ def main():
     dtype = torch.float32
     create_folders(args)
     print(args)
-    args.datadir = "./Model/EDM/qm9/temp"
+    args.datadir = "../../Model/EDM/qm9/temp"
 
     # Retrieve QM9 dataloaders
     dataloaders, charge_scale = dataset.retrieve_dataloaders(args)
