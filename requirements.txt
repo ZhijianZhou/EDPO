@@ -9,3 +9,4 @@ rdkit
 matplotlib
 trl==0.12.1
 tensordict
+ray==2.41.0
