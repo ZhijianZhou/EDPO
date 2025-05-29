@@ -52,7 +52,7 @@ def retrieve_qm9_smiles(dataset_info):
     else:
         pickle_name = dataset_name + '_noH'
 
-    file_name = 'qm9/temp/%s_smiles.pickle' % pickle_name
+    file_name = '/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/zhouzhejian-240108120128/Mol/EDPO/Model/EDM/qm9/temp/qm9_smiles.pickle'
     try:
         with open(file_name, 'rb') as f:
             qm9_smiles = pickle.load(f)

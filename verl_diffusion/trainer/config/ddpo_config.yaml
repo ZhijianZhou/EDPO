@@ -1,9 +1,9 @@
 name: edm
 dataloader:
-  sample_group_size: 4
-  each_prompt_sample: 128
+  sample_group_size: 32
+  each_prompt_sample: 16
   micro_batch_size: 512
-  epoches: 100
+  epoches: 10
   smiles_path: "./Model/EDM/qm9/temp/qm9_smiles.pickle"
 model:
   config: "./pretrained/edm/edm_qm9/args.pickle"

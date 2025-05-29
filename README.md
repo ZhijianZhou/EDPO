@@ -1,14 +1,14 @@
-# Verl Diffusion Framework
+# RLPF: Reinforcement Learning with Physical Feedback
 
-A flexible framework for implementing diffusion-based reinforcement learning with custom models.
+A flexible framework for implementing reinforcement learning with physical feedback using diffusion models, built on top of the verl_diffusion framework.
 
 ## Overview
 
-The Verl Diffusion Framework provides a structured approach to implementing diffusion models with reinforcement learning capabilities. It's designed to be modular and extensible, allowing you to integrate your own models, reward functions, and training procedures.
+The RLPF (Reinforcement Learning with Physical Feedback) framework provides a structured approach to implementing diffusion models with reinforcement learning capabilities and physical feedback mechanisms. It's designed to be modular and extensible, allowing you to integrate your own models, reward functions, and training procedures while leveraging the robust verl_diffusion foundation.
 
 ## Framework Structure
 
-The framework is organized into several key components:
+The RLPF framework is organized into several key components, built on the verl_diffusion architecture:
 
 - **Model**: Defines the diffusion model architecture
 - **Trainer**: Handles the training process
@@ -16,11 +16,46 @@ The framework is organized into several key components:
 - **Utils**: Helper functions and utilities
 - **Dataloader**: Data loading and preprocessing
 
-## Getting Started
+## 📦 Installation
+
+### 1. Setup Python Environment
+
+```bash
+conda create -n RLPF python=3.10.14
+conda activate RLPF
+pip install -r requirements.txt
+```
+
+### 2. Install xtb for Force Calculations (Used in Reward)
+
+```bash
+cd RLPF
+git clone https://github.com/grimme-lab/xtb-python.git
+cd xtb-python
+pip install .
+cd ..
+```
+
+## 🚀 How to use RLPF to finetune EDM with xtb reward 
+### 1. Set up EDM environment
+```bash
+cd ./Model/EDM
+pip install .
+```
+### 2. For QM9 molecule generation
+```bash
+bash example/edm_ddpo_xtb/run.sh
+```
+
+### 3. Eval on QM9 molecule generation
+
+## Getting Started with RLPF
+
+The RLPF framework allows you to fine-tune diffusion models like EDM using physical feedback rewards such as XTB (Extended Tight Binding) calculations. Here's how to get started:
 
 ### 1. Define Your Custom Model
 
-To use your own model with the framework, you need to create a class that inherits from `BaseModel`:
+To use your own model with the RLPF framework, you need to create a class that inherits from `BaseModel` in the verl_diffusion package:
 
 ```python
 from verl_diffusion.model.base import BaseModel
@@ -85,7 +120,7 @@ class YourCustomModel(BaseModel):
         pass
 ```
 
-### 2. Define Your Reward Function
+### 2. Define Your Physical Feedback Reward Function
 
 Create a reward function that inherits from the base reward class:
 
@@ -111,9 +146,9 @@ class YourCustomReward(BaseReward):
         pass
 ```
 
-### 3. Configure Your Training Process
+### 3. Configure Your RLPF Training Process
 
-Create a configuration file that specifies your training parameters:
+Create a configuration file that specifies your RLPF training parameters and physical feedback settings:
 
 ```python
 config = {
@@ -143,7 +178,7 @@ config = {
 }
 ```
 
-### 4. Set Up the Training Pipeline
+### 4. Set Up the RLPF Training Pipeline
 
 ```python
 from verl_diffusion.trainer.ddpo_trainer import DDPOTrainer
@@ -172,7 +207,9 @@ trainer = DDPOTrainer(
 trainer.fit()
 ```
 
-## Key Components
+## Key Components of RLPF
+
+The RLPF framework leverages the following key components from verl_diffusion while adding physical feedback capabilities:
 
 ### DataProto
 
@@ -241,7 +278,6 @@ class YourCustomActor(BaseActor):
         # Implement your action selection logic
         pass
 ```
-
 ## Advanced Usage
 
 ### Custom Filters
@@ -287,22 +323,23 @@ def parallel_process(data):
     pass
 ```
 
-## Best Practices
+## Best Practices for RLPF
 
 1. **Model Design**:
    - Ensure your model implements all required methods from `BaseModel`
    - Use appropriate masking for variable-sized inputs
    - Implement proper normalization and denormalization
 
-2. **Reward Function**:
-   - Design rewards that are differentiable when possible
+2. **Physical Feedback Reward Function**:
+   - Design rewards that incorporate meaningful physical properties (e.g., XTB energy, stability)
    - Normalize rewards to prevent training instability
-   - Consider using reward shaping for better learning
+   - Consider using reward shaping for better learning with physical constraints
 
-3. **Training Process**:
+3. **RLPF Training Process**:
    - Use appropriate batch sizes for your hardware
    - Monitor training metrics with wandb
    - Implement proper checkpointing and model saving
+   - Balance physical feedback frequency with computational cost
 
 4. **Data Handling**:
    - Use `DataProto` for consistent data exchange

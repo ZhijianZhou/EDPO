@@ -147,28 +147,9 @@ class EDMActor(BaseActor):
         samples["timesteps"] = data.batch["timesteps"]
         samples["logps"] = data.batch["logps"]
         samples["nodesxsample"] = data.batch["nodesxsample"]
-  
-        
-        
-        device = samples["latents"].device
-        perm = torch.randperm(self.batch_size, device=device)
-
-        
         if self.condition:
-            for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages','context']:
-                samples[key] = samples[key][perm]
-        else:
-            for key in ["timesteps", "latents", "next_latents", "logps",'nodesxsample','advantages']:
-                samples[key] = samples[key][perm]
-        # shuffle timesteps
-        
-        perms = torch.stack([torch.randperm(self.num_timesteps+1, device=device) for _ in range(self.batch_size)])
-        
-        for key in ["timesteps", "latents", "next_latents","logps"]:
-            samples[key] = samples[key][
-                torch.arange(self.batch_size, device=device)[:, None],
-                perms,
-            ]
+           samples["context"] = data.batch["context"]
+
         original_keys = samples.keys()
         original_values = samples.values()
         # rebatch them as user defined train_batch_size is different from sample_batch_size

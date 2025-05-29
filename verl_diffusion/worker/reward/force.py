@@ -31,6 +31,8 @@ def calcuate_xtb_force(mol, calc, dataset_info, atom_encoder):
         mean_abs_forces = 5.0
     return -1 * mean_abs_forces, float(validity_results[0])
 
+
+
 class ForceReward(BaseReward):
     def __init__(self, dataset_info:dict, condition:bool=False):
         super().__init__()

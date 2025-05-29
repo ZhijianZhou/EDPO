@@ -6,7 +6,7 @@ import ray
 from tqdm import tqdm
 import wandb
 import os
-
+import yaml
 from verl_diffusion.trainer.base import BaseTrainer
 from verl_diffusion.protocol import DataProto
 
@@ -34,7 +34,7 @@ class DDPOTrainer(BaseTrainer):
         self.device = device
         self.dataloader = dataloader
         self.config = config
-        self.save_path = config.get("save_path", "./exp/edm_ddpo")
+        self.save_path = os.path.join("./exp",config["wandb"]["wandb_name"])
         os.makedirs(self.save_path, exist_ok=True)
         self.epoches = self.config["dataloader"]["epoches"]
         # Use provided rollout and rewarder instances
@@ -119,13 +119,12 @@ class DDPOTrainer(BaseTrainer):
             
             # Split into mini-batches
             batch_prompts = prompts.chunk(chunks=num_chunks)
-            total_batches = len(batch_prompts)
             
             # Initialize a list to store all sample results as DataProto objects
             sample_results = []
             # Process each mini-batch
             for chunk_idx, batch in enumerate(batch_prompts):
-                batch_id = f"{batch_idx+1}.{chunk_idx+1}"
+            
                 
                 # Generate sample using rollout
                 sample = self.rollout.generate_minibatch(batch)
@@ -192,21 +191,12 @@ class DDPOTrainer(BaseTrainer):
         samples.batch["advantages"] = torch.clamp(samples.batch["advantages"], -clip_value, clip_value)
         
         return samples
-    # def compute_advantage(self, samples):
 
-    #     rewards = samples.batch["rewards"]
-    #     samples.batch["advantages"] = (rewards - rewards.mean()) / (rewards.std()+1e-8)
-    #     # Clip advantages to prevent extreme values
-    #     clip_value = self.config["train"].get("clip_advantage_value", 5.0)
-    #     samples.batch["advantages"] = torch.clamp(samples.batch["advantages"], -clip_value, clip_value)
-        
-    #     return samples
     def save_checkpoint(self, epoch, metrics=None):
         """Save model checkpoint and config"""
         # Save config
         config_path = os.path.join(self.save_path, 'config.yaml')
         if isinstance(self.config, dict):
-            import yaml
             with open(config_path, 'w') as f:
                 yaml.dump(self.config, f)
         else:
@@ -224,10 +214,15 @@ class DDPOTrainer(BaseTrainer):
         # Save latest checkpoint
         torch.save(checkpoint, os.path.join(self.save_path, 'checkpoint_latest.pth'))
         
+        # Save epoch checkpoint
+        torch.save(checkpoint, os.path.join(self.save_path, f'checkpoint_epoch_{epoch}.pth'))
+        
         # Save best checkpoint if metrics are provided
         if metrics is not None:
             if metrics['reward'] > self.best_reward:
                 self.best_reward = metrics['reward']
+                
+                torch.save(self.generate_model.state_dict(),os.path.join(self.save_path, 'generative_model_ema.npy'))
                 torch.save(checkpoint, os.path.join(self.save_path, 'checkpoint_best.pth'))
     
     def load_checkpoint(self, checkpoint_path):
@@ -254,48 +249,52 @@ class DDPOTrainer(BaseTrainer):
         try:
             all_results = []
             start_epoch = 0
-            
+            global_batch_idx = 0
             # Load checkpoint if resuming
             if self.config.get('resume', False) and self.config.get('checkpoint_path'):
                 start_epoch = self.load_checkpoint(self.config['checkpoint_path'])
                 print(f"Resuming training from epoch {start_epoch}")
-            
-            # Process each batch from the dataloader and update model after each batch
-            for batch_idx, prompts in enumerate(self.dataloader):
-                if start_epoch + batch_idx > self.epoches:
-                   break
-                # Process the batch
-                samples = self.process_batch(batch_idx, prompts)
-                samples, filter_ratio, novelty_penalty_ratio = self.filters.filter(samples)
-                samples = self.compute_advantage(samples)
-                metrics = self.actor.update_policy(samples)
-                metrics["reward"] = samples.batch["rewards"].mean().item()
-                metrics["filter_ratio"] = filter_ratio
-                metrics["novelty_penalty_ratio"] = novelty_penalty_ratio
-                metrics["molecule_stability"] = samples.batch['stability'].mean().item()
+            for epoch in range(start_epoch, self.epoches):
+                # Process each batch from the dataloader and update model after each batch
+                for batch_idx, prompts in enumerate(self.dataloader):
+                    # Process the batch
+                    samples = self.process_batch(batch_idx, prompts)
+                    samples, filter_ratio, novelty_penalty_ratio = self.filters.filter(samples)
+                    samples = self.compute_advantage(samples)
+                    metrics = self.actor.update_policy(samples)
+                    metrics["reward"] = samples.batch["rewards"].mean().item()
+                    metrics["filter_ratio"] = filter_ratio
+                    metrics["novelty_penalty_ratio"] = novelty_penalty_ratio
+                    metrics["molecule_stability"] = samples.batch['stability'].mean().item()
+                    
+                    # Save checkpoint periodically
+                    if (batch_idx + 1) % self.config.get('save_interval', 10) == 0:
+                        self.save_checkpoint(batch_idx, metrics)
+                    global_batch_idx += 1
+                    # Log metrics to wandb if enabled
+                    if self.wandb_enabled:
+                        # Combine all metrics into a single log call
+                        log_dict = {
+                            "train/reward": metrics["reward"],
+                            "train/filter_ratio": metrics["filter_ratio"],
+                            "train/novelty_penalty_ratio": metrics["novelty_penalty_ratio"],
+                            "train/molecule_stability": metrics["molecule_stability"],
+                            "train/step": global_batch_idx
+                        }
+                        # Add any additional metrics from actor update
+                        for k, v in metrics.items():
+                            if k not in ["reward", "filter_ratio", "novelty_penalty_ratio", "molecule_stability"]:
+                                log_dict[f"train/{k}"] = v
+                        wandb.log(log_dict)
+                    
+                    print(metrics)
                 
-                # Save checkpoint periodically
-                if (batch_idx + 1) % self.config.get('save_interval', 10) == 0:
-                    self.save_checkpoint(batch_idx, metrics)
+                # Save checkpoint at the end of each epoch
+                self.save_checkpoint(epoch, metrics)
+                print(f"Saved checkpoint at epoch {epoch}")
                 
-                # Log metrics to wandb if enabled
-                if self.wandb_enabled:
-                    wandb.log({
-                        "train/reward": metrics["reward"],
-                        "train/filter_ratio": metrics["filter_ratio"],
-                        "train/novelty_penalty_ratio": metrics["novelty_penalty_ratio"],
-                        "train/molecule_stability": metrics["molecule_stability"],
-                        "train/step": batch_idx
-                    })
-                    # Log additional metrics from actor update if available
-                    for k, v in metrics.items():
-                        if k not in ["reward", "filter_ratio"]:
-                            wandb.log({f"train/{k}": v})
-                
-                print(metrics)
-            
-            # Save final checkpoint
-            self.save_checkpoint(len(self.dataloader), metrics)
+                # Save final checkpoint
+                self.save_checkpoint(len(self.dataloader), metrics)
             
         except KeyboardInterrupt:
             print("Training interrupted by user")
